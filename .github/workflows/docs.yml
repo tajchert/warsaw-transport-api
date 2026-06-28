@@ -1,0 +1,68 @@
+name: API docs
+
+# Keeps the rendered Redoc docs in sync with openapi.yaml.
+# - Triggers ONLY when the spec/config/this-workflow change, so the auto-commit
+#   below (which touches only docs/index.html) cannot retrigger the workflow.
+# - On PRs: lint + build + fail if docs/index.html is stale.
+# - On push to main: lint + build + commit the rebuilt HTML back.
+on:
+  push:
+    branches: [main]
+    paths:
+      - openapi.yaml
+      - redocly.yaml
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - openapi.yaml
+      - redocly.yaml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: api-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REDOCLY_VERSION: "2.35.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Lint OpenAPI spec
+        run: npx --yes @redocly/cli@${REDOCLY_VERSION} lint openapi.yaml
+
+      - name: Build rendered docs
+        run: npx --yes @redocly/cli@${REDOCLY_VERSION} build-docs openapi.yaml -o docs/index.html
+
+      - name: Fail if docs/index.html is stale (PRs)
+        if: github.event_name == 'pull_request'
+        run: |
+          if ! git diff --quiet -- docs/index.html; then
+            echo "::error::docs/index.html is out of date with openapi.yaml."
+            echo "Run: npx @redocly/cli build-docs openapi.yaml -o docs/index.html  — then commit."
+            git --no-pager diff --stat -- docs/index.html
+            exit 1
+          fi
+          echo "docs/index.html is up to date."
+
+      - name: Commit rebuilt docs (push to main)
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet -- docs/index.html; then
+            echo "docs/index.html already up to date — nothing to commit."
+          else
+            git config user.name  'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add docs/index.html
+            git commit -m "ci: rebuild rendered API docs [skip ci]"
+            git push
+          fi

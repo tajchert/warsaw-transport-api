@@ -273,9 +273,16 @@ All responses are **HTTP 200**; detect failure by inspecting the body.
 Since the API no longer serves per-stop lat/lon (§7b), get it from the official **WTP GTFS** feed and
 join on stop id. **Verified live 2026-06-28** against the feed + API.
 
-- **Feed:** `https://mkuran.pl/gtfs/warsaw.zip` (official WTP data, rebuilt daily; ~97 MB). Use
-  `stops.txt`. Columns: `stop_id, stop_name, stop_code, platform_code, stop_lat, stop_lon,
-  location_type, parent_station, …, street_name, town_name`.
+- **Feed (practical):** `https://mkuran.pl/gtfs/warsaw.zip` — community-generated GTFS, rebuilt daily
+  (~97 MB). Use `stops.txt`. Columns: `stop_id, stop_name, stop_code, platform_code, stop_lat,
+  stop_lon, location_type, parent_station, …, street_name, town_name`.
+- **Sources:**
+  - Generated from official ZTM data by the open-source converter
+    [`MKuranowski/WarsawGTFS`](https://github.com/MKuranowski/WarsawGTFS).
+  - **Official upstream:** ZTM schedule data at
+    `https://www.ztm.waw.pl/pliki-do-pobrania/dane-rozkladowe/` — authoritative but in ZTM's
+    *proprietary* text format, **not** GTFS (that's what WarsawGTFS converts).
+  - Aggregator mirror: Transitland feed `f-u3q-warszawski~transport~publiczny`.
 
 ### The join rule
 ```

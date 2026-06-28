@@ -87,7 +87,10 @@ GTFS stop_id  ==  busstopId (4 digits, zero-padded)  +  busstopNr (2 chars)
    7009 / 01   ⇄   "700901"   →   Marszałkowska, (52.217931, 21.020112)
 ```
 
-- **Feed:** <https://mkuran.pl/gtfs/warsaw.zip> (official WTP data, rebuilt daily). Use `stops.txt`.
+- **Feed (practical):** <https://mkuran.pl/gtfs/warsaw.zip> — community-generated GTFS, rebuilt daily. Use `stops.txt`.
+  - Generated from official ZTM data by the open-source [WarsawGTFS](https://github.com/MKuranowski/WarsawGTFS) converter.
+- **Official upstream:** ZTM Warsaw schedule data — <https://www.ztm.waw.pl/pliki-do-pobrania/dane-rozkladowe/> (authoritative, but ZTM's *proprietary* format, **not** GTFS; converting it is what WarsawGTFS does).
+- **Aggregator mirror:** [Transitland — Warszawski Transport Publiczny](https://www.transit.land/feeds/f-u3q-warszawski~transport~publiczny).
 - Only the **6-digit numeric** `stop_id`s are bus/tram posts; `####M` / `####M:E#` are metro.
 - Helper: [`scripts/gtfs_stops_join.py`](scripts/gtfs_stops_join.py)
 
