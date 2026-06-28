@@ -1,0 +1,554 @@
+openapi: 3.1.0
+info:
+  title: Warsaw Public Transport Open Data API (unofficial spec)
+  version: 1.0.0
+  summary: Community-written OpenAPI description of the ZTM/WTP transit endpoints of api.um.warszawa.pl
+  description: |
+    Unofficial, **community-written** OpenAPI description of the public-transport
+    endpoints of the City of Warsaw open-data API (`api.um.warszawa.pl`).
+
+    Every operation here was **verified live on 2026-06-28**. Where the live behaviour
+    differs from the official docs or community examples, this spec documents the
+    *live* behaviour and flags the difference.
+
+    ## Things you must know before using this API
+    - **Errors are returned with HTTP `200`.** You must inspect the JSON body, not the
+      status code. See the `Result*` schemas and the `x-error-strings` table below.
+      - `{"result": null}` → query OK, no matching data
+      - `{"result": "Błędna metoda lub parametry wywołania"}` → wrong action/id/params
+      - `{"result": "false", "error": "Błędny apikey lub jego brak"}` → bad/missing key
+      - `{"result": "Wfs error: Connection reset"}` → transient `wfsstore_get` error, retry
+    - **`dbtimetable_get` is a multiplexer:** the `id` (dataset UUID) **and** which
+      params you send select one of three different datasets. They are documented as
+      three separate example sets on the one operation.
+    - **`busestrams_get` ignores `line`/`brigade`** at present — filter client-side.
+    - **The vehicle feed contains stale "ghost" rows** — drop entries whose `Time`
+      is older than ~60–120 s.
+    - **No rate limit is published or enforced** at normal volumes; an undocumented
+      load-balancer abuse filter exists. Poll live data every ~15–20 s; cache static
+      datasets daily. See the project guide (README) for the full polling policy.
+    - **Stop coordinates are not available from the API** (legacy `dbstore_get` ids are
+      decommissioned). Join the GTFS feed instead — see `README.md` §"GTFS join".
+
+    ## Authentication
+    Every transit call needs `apikey` as a query parameter. Get a free key by
+    registering at https://api.um.warszawa.pl/.
+  contact:
+    name: Project guide & GTFS join helper
+    url: https://github.com/tajchert/warsaw-transport-api
+  license:
+    name: Data © m.st. Warszawa — see Warunki korzystania z danych
+    url: https://api.um.warszawa.pl/
+  x-error-strings:
+    "null": Query OK, no matching data.
+    Błędna metoda lub parametry wywołania: Wrong action/dataset id or missing/invalid params.
+    Błędny apikey lub jego brak: Bad or missing apikey (response also has result="false").
+    "Wfs error: Connection reset": Transient wfsstore_get upstream error; retry.
+
+servers:
+  - url: https://api.um.warszawa.pl/api
+    description: Production (only server)
+
+security:
+  - apiKeyQuery: []
+
+tags:
+  - name: Live positions
+    description: Real-time vehicle GPS.
+  - name: Timetables
+    description: Stop dictionaries and scheduled departures (dbtimetable_get).
+  - name: Reference data
+    description: Route topology and dictionaries; large, static-ish, cache daily.
+  - name: Vector layers
+    description: WFS point layers (metro entrances, bikes, parking, …) with coordinates.
+  - name: Deprecated
+    description: Endpoints whose documented resource ids no longer work.
+
+paths:
+  /action/busestrams_get:
+    get:
+      tags: [Live positions]
+      operationId: getBusesTrams
+      summary: Live vehicle positions (buses & trams)
+      description: |
+        Returns the current GPS positions of all buses (`type=1`) or all trams
+        (`type=2`) across the city. No bounding-box filter — clip client-side.
+
+        **Verified gotchas:**
+        - `type` is effectively required (1=bus → ~1000+ rows, 2=tram → ~200+ rows).
+        - `line` and `brigade` are **accepted but ignored** — the full set is returned
+          regardless. Filter on the `Lines` field yourself.
+        - The feed keeps **stale rows** for vehicles that stopped reporting (timestamps
+          can be hours/months old). Drop rows where `Time` is older than ~60–120 s.
+        - Refreshes server-side every ~10–20 s; do not poll faster.
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - name: resource_id
+          in: query
+          required: true
+          description: Fixed dataset id for the live-position feed.
+          schema:
+            type: string
+            default: f2e5503e-927d-4ad3-9500-4ab9e55deb59
+            enum: [f2e5503e-927d-4ad3-9500-4ab9e55deb59]
+        - name: type
+          in: query
+          required: true
+          description: Vehicle type. `1` = bus, `2` = tram.
+          schema:
+            type: integer
+            enum: [1, 2]
+        - name: line
+          in: query
+          required: false
+          deprecated: true
+          description: '**Currently ignored by the server.** Filter client-side instead.'
+          schema: { type: string }
+        - name: brigade
+          in: query
+          required: false
+          deprecated: true
+          description: '**Currently ignored by the server.** Filter client-side instead.'
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK (may also carry an error string — see schema).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/VehiclePositionsResult'
+                  - $ref: '#/components/schemas/ErrorResult'
+              examples:
+                trams:
+                  summary: Trams (type=2)
+                  value:
+                    result:
+                      - Lines: "28"
+                        Brigade: "014"
+                        VehicleNumber: "1284"
+                        Lat: 52.29962
+                        Lon: 20.931208
+                        Time: "2026-06-28 21:09:13"
+                badKey:
+                  summary: Bad/missing apikey
+                  value: { result: "false", error: "Błędny apikey lub jego brak" }
+
+  /action/dbtimetable_get:
+    get:
+      tags: [Timetables]
+      operationId: getTimetable
+      summary: Timetable datasets (multiplexed by `id`)
+      description: |
+        One action, **three datasets** selected by the `id` UUID plus the params you send.
+        A stop is addressed by a pair: `busstopId` (4-digit *zespół* / stop-group) +
+        `busstopNr` (2-char post, e.g. `01`).
+
+        | `id` | dataset | required params |
+        |------|---------|-----------------|
+        | `88cd555f-6f31-43ca-9de4-66c479ad5942` | **Lines at a stop post** | `busstopId`, `busstopNr` |
+        | `e923fa0e-d96c-43f9-ae6e-60518c9f3238` | **Scheduled departures** (whole day) | `busstopId`, `busstopNr`, `line` |
+        | `b27f4c17-5c50-4a5b-89dd-236b282bc499` | Stop group by name (coords) | `name` |
+
+        **Result rows are key/value pair lists**, not objects — fold them yourself
+        (see schema). Scheduled times (`czas`) can exceed 24h (e.g. `25:30:00`).
+
+        > ⚠️ The `b27f4c17…` "by name" dataset currently returns `null` for every query
+        > (server-side broken). Resolve names via `public_transport_dictionary` →
+        > `zespoly_przystankowe`, and get coordinates from the GTFS join (see README).
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - name: id
+          in: query
+          required: true
+          description: Dataset UUID (selects which timetable dataset).
+          schema:
+            type: string
+            enum:
+              - 88cd555f-6f31-43ca-9de4-66c479ad5942
+              - e923fa0e-d96c-43f9-ae6e-60518c9f3238
+              - b27f4c17-5c50-4a5b-89dd-236b282bc499
+        - name: busstopId
+          in: query
+          required: false
+          description: 4-digit stop-group id (*zespół*). Required for the lines & departures datasets.
+          schema: { type: string, examples: ["7009"] }
+        - name: busstopNr
+          in: query
+          required: false
+          description: 2-char post number (*słupek*). Required for the lines & departures datasets.
+          schema: { type: string, examples: ["01"] }
+        - name: line
+          in: query
+          required: false
+          description: Line number/symbol. Required for the scheduled-departures dataset.
+          schema: { type: string, examples: ["151"] }
+        - name: name
+          in: query
+          required: false
+          description: Stop-group name (for the `b27f4c17…` dataset — currently returns null).
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK (key/value rows, or null, or an error string).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/KeyValueRowsResult'
+                  - $ref: '#/components/schemas/NullResult'
+                  - $ref: '#/components/schemas/ErrorResult'
+              examples:
+                linesAtStop:
+                  summary: Lines at stop 7009/01 (id=88cd555f…)
+                  value:
+                    result:
+                      - values: [ { key: "linia", value: "151" } ]
+                      - values: [ { key: "linia", value: "143" } ]
+                departures:
+                  summary: Scheduled departures 7009/01 line 151 (id=e923fa0e…)
+                  value:
+                    result:
+                      - - { key: "symbol_2", value: null }
+                        - { key: "symbol_1", value: null }
+                        - { key: "brygada", value: "1" }
+                        - { key: "kierunek", value: "Rechniewskiego" }
+                        - { key: "trasa", value: "TP-REH" }
+                        - { key: "czas", value: "20:37:00" }
+                noData:
+                  summary: by-name dataset (broken) → null
+                  value: { result: null }
+
+  /action/public_transport_routes:
+    get:
+      tags: [Reference data]
+      operationId: getRoutes
+      summary: Route definitions (line → variant → stop sequence)
+      description: |
+        Nested object: line → route-variant code → stop-sequence index → stop descriptor
+        (`nr_zespolu`, `nr_przystanku`, `ulica_id`, `typ`, `odleglosc`). Resolve `ulica_id`
+        and `typ` via `public_transport_dictionary`. Large & static-ish — cache daily.
+        No dataset id; `apikey` only.
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+      responses:
+        '200':
+          description: Route topology keyed by line.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesResult' }
+              examples:
+                sample:
+                  value:
+                    result:
+                      "217":
+                        "TX-WIL02":
+                          "11": { ulica_id: "1991", nr_zespolu: "3040", typ: "1", nr_przystanku: "02", odleglosc: 422 }
+
+  /action/public_transport_dictionary:
+    get:
+      tags: [Reference data]
+      operationId: getDictionary
+      summary: Dictionary (streets, stop-group names, stop types, places)
+      description: |
+        Returns four maps: `ulice` (street id→name), `typy_przystankow`
+        (1=stały, 2=na żądanie, 3=krańcowy), `zespoly_przystankowe`
+        (stop-group id→name — **use this for name↔id resolution**), and `miejsca`.
+        No dataset id; `apikey` only. Cache daily.
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+      responses:
+        '200':
+          description: Dictionary maps.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DictionaryResult' }
+              examples:
+                sample:
+                  value:
+                    result:
+                      ulice: { "2318": "Kleszczowa" }
+                      typy_przystankow: { "1": "stały", "2": "na żądanie", "3": "krańcowy" }
+                      zespoly_przystankowe: { "4026": "Paluch", "7009": "Marszałkowska" }
+                      miejsca: { "344": "Chojnów" }
+
+  /action/wfsstore_get:
+    get:
+      tags: [Vector layers]
+      operationId: getWfsLayer
+      summary: WFS point layers (metro entrances, bikes, parking, …)
+      description: |
+        Returns a point layer as `featureMemberList` with `geometry.coordinates`
+        (`latitude`/`longitude`) plus key/value `properties`. The layer is chosen by `id`.
+        Optionally constrain with `bbox`, `circle`, `filter`, `limit`.
+
+        **Known layer ids** (✅ = verified live):
+        | id | layer |
+        |----|-------|
+        | `0ac7f6d1-a26b-430f-9e3d-a41c5356b9a3` | ✅ Metro/subway entrances |
+        | `a08136ec-1037-4029-9aa5-b0d0ee0b9d88` | ✅ Veturilo cycle stations |
+        | `8a235d27-b96a-4876-9b92-9e164940c9b6` | Cycle tracks |
+        | `157648fd-a603-4861-af96-884a8e35b155` | Parking lots |
+        | `e26218cb-61ec-4ccb-81cc-fd19a6fee0f8` | Theaters |
+
+        There is **no** bus/tram stop layer and **no** tram-track layer here.
+        May return `"Wfs error: Connection reset"` transiently — retry.
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - name: id
+          in: query
+          required: true
+          description: Layer dataset UUID (see table in description).
+          schema:
+            type: string
+            enum:
+              - 0ac7f6d1-a26b-430f-9e3d-a41c5356b9a3
+              - a08136ec-1037-4029-9aa5-b0d0ee0b9d88
+              - 8a235d27-b96a-4876-9b92-9e164940c9b6
+              - 157648fd-a603-4861-af96-884a8e35b155
+              - e26218cb-61ec-4ccb-81cc-fd19a6fee0f8
+        - name: bbox
+          in: query
+          required: false
+          description: Bounding box filter (minLon,minLat,maxLon,maxLat).
+          schema: { type: string }
+        - name: circle
+          in: query
+          required: false
+          description: Circle filter (lon,lat,radius_m).
+          schema: { type: string }
+        - name: filter
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer }
+      responses:
+        '200':
+          description: WFS feature collection (or transient error string).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/WfsResult'
+                  - $ref: '#/components/schemas/ErrorResult'
+              examples:
+                cycleStations:
+                  summary: Veturilo stations
+                  value:
+                    result:
+                      featureMemberPropertyKey: [OBJECTID, LOKALIZACJA, NR_STACJI, ROWERY, STOJAKI, AKTU_DAN]
+                      featureMemberList:
+                        - geometry:
+                            type: ShapePoint
+                            coordinates: [ { latitude: "52.207419", longitude: "21.047962" } ]
+                          properties:
+                            - { key: OBJECTID, value: "2585791" }
+                            - { key: LOKALIZACJA, value: "Czerniakowska - Gagarina" }
+
+  /action/dbstore_get:
+    get:
+      tags: [Deprecated]
+      operationId: getDbStore
+      deprecated: true
+      summary: '[DECOMMISSIONED] Stop list with coordinates'
+      description: |
+        Historic "stops with coordinates" datasets. **All known ids now return
+        `"Błędna metoda lub parametry wywołania"`** (tested with `id=` and `resource_id=`,
+        with/without trailing slash, with `page`/`size`). Documented for completeness only.
+        Get stop coordinates from the GTFS feed instead (see README §"GTFS join").
+
+        Dead ids: `ab75c33d-3a26-4342-b36a-6e5fef0a3ac3` (full list),
+        `1c08a38c-ae09-46d2-8926-4f9d25cb0630` (current-day list).
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Error string (datasets decommissioned).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResult' }
+
+  /action/wsstore_get:
+    get:
+      tags: [Deprecated]
+      operationId: getWsStore
+      deprecated: true
+      summary: '[DEPRECATED] Legacy live trams'
+      description: |
+        Legacy live-tram feed (`id=c7238cfe-8b1f-4c38-bb4a-de386db7e776`). Superseded by
+        `busestrams_get`; now returns `"Błędna metoda lub parametry wywołania"`.
+        Not to be confused with `wfsstore_get` (which works).
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Error string (deprecated).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResult' }
+
+components:
+  securitySchemes:
+    apiKeyQuery:
+      type: apiKey
+      in: query
+      name: apikey
+      description: Free key from https://api.um.warszawa.pl/ (registration required).
+
+  parameters:
+    ApiKey:
+      name: apikey
+      in: query
+      required: true
+      description: Your API key.
+      schema: { type: string }
+
+  schemas:
+    ErrorResult:
+      type: object
+      description: |
+        Error envelope returned with HTTP 200. `result` holds a human-readable Polish
+        string; bad-key responses add an `error` field and set `result` to the string "false".
+      properties:
+        result:
+          type: string
+          examples: ["Błędna metoda lub parametry wywołania", "false", "Wfs error: Connection reset"]
+        error:
+          type: string
+          examples: ["Błędny apikey lub jego brak"]
+      required: [result]
+
+    NullResult:
+      type: object
+      description: Successful query with no matching data.
+      properties:
+        result:
+          type: "null"
+      required: [result]
+
+    VehiclePositionsResult:
+      type: object
+      properties:
+        result:
+          type: array
+          items: { $ref: '#/components/schemas/VehiclePosition' }
+      required: [result]
+
+    VehiclePosition:
+      type: object
+      properties:
+        Lines: { type: string, description: Line number/symbol, examples: ["28", "N25"] }
+        Brigade: { type: string, description: Brigade (duty) number; join key to schedule 'brygada'. }
+        VehicleNumber: { type: string, description: Physical vehicle id. }
+        Lat: { type: number, format: double }
+        Lon: { type: number, format: double }
+        Time:
+          type: string
+          description: Last GPS report, 'YYYY-MM-DD HH:MM:SS' Warsaw local time. May be stale — filter.
+          examples: ["2026-06-28 21:09:13"]
+
+    KeyValueRowsResult:
+      type: object
+      description: |
+        dbtimetable_get rows. The **lines** dataset wraps pairs in `values`; the
+        **departures** dataset returns a bare list of pairs per row. Fold to a dict.
+      properties:
+        result:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                properties:
+                  values:
+                    type: array
+                    items: { $ref: '#/components/schemas/KeyValue' }
+              - type: array
+                items: { $ref: '#/components/schemas/KeyValue' }
+      required: [result]
+
+    KeyValue:
+      type: object
+      properties:
+        key: { type: string }
+        value: { type: [string, "null"] }
+      required: [key, value]
+
+    RoutesResult:
+      type: object
+      description: "result = { line: { variantCode: { seqIndex: stopDescriptor } } }."
+      properties:
+        result:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              additionalProperties: { $ref: '#/components/schemas/RouteStop' }
+      required: [result]
+
+    RouteStop:
+      type: object
+      properties:
+        ulica_id: { type: string }
+        nr_zespolu: { type: string, description: '= busstopId' }
+        nr_przystanku: { type: string, description: '= busstopNr' }
+        typ: { type: string, description: 'Stop type id → dictionary.typy_przystankow' }
+        odleglosc: { type: integer, description: Distance (m) from route start. }
+
+    DictionaryResult:
+      type: object
+      properties:
+        result:
+          type: object
+          properties:
+            ulice: { type: object, additionalProperties: { type: string } }
+            typy_przystankow: { type: object, additionalProperties: { type: string } }
+            zespoly_przystankowe:
+              type: object
+              additionalProperties: { type: string }
+              description: stop-group id → name. Use for name↔id resolution.
+            miejsca: { type: object, additionalProperties: { type: string } }
+      required: [result]
+
+    WfsResult:
+      type: object
+      properties:
+        result:
+          type: object
+          properties:
+            featureMemberPropertyKey:
+              type: array
+              items: { type: string }
+            featureMemberList:
+              type: array
+              items: { $ref: '#/components/schemas/WfsFeature' }
+      required: [result]
+
+    WfsFeature:
+      type: object
+      properties:
+        geometry:
+          type: object
+          properties:
+            type: { type: string, examples: ["ShapePoint"] }
+            coordinates:
+              type: array
+              items:
+                type: object
+                properties:
+                  latitude: { type: string }
+                  longitude: { type: string }
+        properties:
+          type: array
+          items: { $ref: '#/components/schemas/KeyValue' }

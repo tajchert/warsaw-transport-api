@@ -1,0 +1,8 @@
+# Redocly config for linting/bundling openapi.yaml.
+#   npx @redocly/cli lint openapi.yaml
+#   npx @redocly/cli build-docs openapi.yaml -o docs/index.html
+rules:
+  # This API intentionally NEVER returns 4xx: all errors come back as HTTP 200 with an
+  # error string in the body (see the ErrorResult schema). So the "every operation needs
+  # a 4xx response" rule does not apply and is disabled on purpose.
+  operation-4xx-response: off

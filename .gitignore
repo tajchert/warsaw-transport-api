@@ -1,0 +1,28 @@
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.key
+*secret*
+*token*
+
+# --- Third-party app artifacts (NOT for publication: copyright) ---
+*.apk
+*.xapk
+*.aab
+gdzieonjest-decompiled/
+*-decompiled/
+
+# --- Large / downloaded data (fetch at runtime, don't commit) ---
+*.zip
+warsaw-gtfs.zip
+stops.txt
+stop_times.txt
+trips.txt
+shapes.txt
+
+# --- Tooling ---
+node_modules/
+.DS_Store
+__pycache__/
+*.pyc
