@@ -127,6 +127,13 @@ npx @redocly/cli lint openapi.yaml                          # validate
 npx @redocly/cli build-docs openapi.yaml -o docs/index.html # rebuild rendered docs
 ```
 
+## 📄 License
+
+This repository's **code and documentation** are released under the [MIT License](LICENSE).
+
+The **underlying transit data** is © m.st. Warszawa, provided via `api.um.warszawa.pl` under that
+portal's *Warunki korzystania z danych* — MIT covers this guide/spec/tooling, **not** the data itself.
+
 ## 🙏 Credits
 
 Endpoint patterns cross-checked against community projects:
